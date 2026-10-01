@@ -58,7 +58,7 @@ library(biostat3)
 #   - XLS/XLSX  : readxl::read_excel()
 
 # >>> A MODIFIER : chemin vers le fichier (utiliser des "/" et pas des "\") <<<
-chemin_fichier <- "chemin/baseline.csv"
+chemin_fichier <- "C:/Users/sarto/OneDrive/Desktop/M2 EDSB/S3/Analyses données censurées/Cours 3/Base de données/baseline.csv"
 
 baseline <- read.csv(file = chemin_fichier, stringsAsFactors = FALSE)
 
@@ -81,6 +81,11 @@ head(baseline)    # premieres lignes
 #   DATENAIS -> datenais, DATINC -> datinc, DATDC -> datdc,
 #   DatContact -> dat_contact, Age0c3 -> age0c3 ...
 baseline <- clean_names(baseline)
+
+# Le fichier baseline.csv contient en 1re colonne les numeros de ligne (colonne
+# sans nom, exportee par write.csv). clean_names() la renomme "x" : on la
+# supprime car elle ne sert a rien (750 obs. et 12 variables apres suppression).
+baseline <- baseline %>% select(-any_of("x"))
 names(baseline)
 
 # --- Conversion des dates -----------------------------------------------------
@@ -520,6 +525,52 @@ bind_rows(lapply(methodes, function(m)
 
 # On peut aussi afficher un test pondere directement sur le graphe :
 # ggsurvplot(fit_sexe, data = baseline, pval = TRUE, log.rank.weights = "n")
+
+# /!\ ATTENTION : avec certaines versions de survminer (ex. 0.4.9),
+# surv_pvalue() renvoie pval = 0 pour les tests ponderes (bug d'affichage :
+# "p < 0.0001" est juste, mais la valeur exacte est fausse).
+# -> Verification avec une fonction "maison" qui calcule le test du log-rank
+#    pondere directement a partir des formules du cours.
+#    Pour chaque temps de deces t : U = somme des w(t) * (O - E)
+#                                   V = somme des w(t)^2 * variance
+#    Statistique = U' V^-1 U  ~  Chi2 a (nb groupes - 1) ddl
+logrank_pondere <- function(temps, statut, groupe, poids = "logrank") {
+  groupe <- as.factor(groupe)
+  k      <- nlevels(groupe)
+  # Survie KM globale juste AVANT chaque temps (S(t-)), pour Peto et FH
+  km     <- survfit(Surv(temps, statut) ~ 1)
+  t_dc   <- sort(unique(temps[statut == 1]))
+  S_moins <- c(1, summary(km, times = t_dc)$surv)[seq_along(t_dc)]
+  U <- rep(0, k); V <- matrix(0, k, k)
+  for (i in seq_along(t_dc)) {
+    t    <- t_dc[i]
+    arisq <- temps >= t                                   # sujets a risque
+    n_j  <- as.vector(table(groupe[arisq]))               # a risque / groupe
+    d_j  <- as.vector(table(groupe[temps == t & statut == 1]))  # deces / groupe
+    n <- sum(n_j); d <- sum(d_j)
+    w <- switch(poids,
+                logrank = 1,                               # Log-rank
+                n       = n,                               # Gehan-Breslow
+                sqrtN   = sqrt(n),                         # Tarone-Ware
+                S1      = S_moins[i],                      # Peto-Peto
+                FH11    = S_moins[i] * (1 - S_moins[i]))   # Fleming-Harrington
+    U <- U + w * (d_j - d * n_j / n)
+    if (n > 1) {
+      V <- V + w^2 * d * (n - d) / (n - 1) *
+        (diag(n_j / n, k) - (n_j / n) %o% (n_j / n))
+    }
+  }
+  chi2 <- as.numeric(t(U[-1]) %*% solve(V[-1, -1, drop = FALSE]) %*% U[-1])
+  data.frame(ponderation = poids, chi2 = round(chi2, 2), ddl = k - 1,
+             p_value = signif(pchisq(chi2, df = k - 1, lower.tail = FALSE), 3))
+}
+
+# Comparaison des 5 ponderations selon le sexe
+bind_rows(lapply(c("logrank", "n", "sqrtN", "S1", "FH11"), function(p)
+  logrank_pondere(baseline$deldninc, baseline$statut, baseline$sexe, poids = p)))
+# Controle : la ponderation "logrank" redonne exactement survdiff()
+# (Chisq = 21.1, p = 4e-06), et "S1" correspond a survdiff(..., rho = 1)
+survdiff(Surv(deldninc, statut) ~ sexe, data = baseline, rho = 1)
 
 
 # =============================================================================
