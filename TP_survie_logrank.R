@@ -593,3 +593,111 @@ print(result_logrank_sexe_centre)
 # variables sur la survie ?  -> Modele de Cox (prochain TP) :
 #   coxph(Surv(deldninc, statut) ~ age0 + sexe + centre, data = baseline)
 # =============================================================================
+
+
+# =============================================================================
+# OBJECTIF 5 : CALCUL DU NOMBRE DE SUJETS NECESSAIRES (G*Power et R)
+# =============================================================================
+# Question : combien de sujets faut-il inclure pour mettre en evidence une
+# difference de survie entre hommes et femmes, avec :
+#   - un risque de 1re espece alpha = 5 % (test bilateral)
+#   - une puissance 1 - beta = 80 %
+# On utilise ici les valeurs OBSERVEES dans baseline comme hypotheses (en
+# pratique, elles viennent de la litterature ou d'une etude pilote).
+
+alpha     <- 0.05
+puissance <- 0.80
+z_alpha   <- qnorm(1 - alpha / 2)   # 1.96
+z_beta    <- qnorm(puissance)       # 0.84
+
+# ---- Parametres d'entree tires des donnees ----------------------------------
+# Hazard ratio femmes vs hommes estime a partir du log-rank : (O/E) / (O/E)
+oe       <- result_logrank_sexe$obs / result_logrank_sexe$exp
+HR       <- oe[2] / oe[1]
+# Proportion de femmes (groupe 2) et ratio d'allocation k = N2 / N1
+p_femmes <- mean(baseline$sexe == "femme")
+k        <- p_femmes / (1 - p_femmes)
+# Proportion de sujets qui font l'evenement pendant l'etude (282 / 750)
+p_evt    <- mean(baseline$statut)
+# Probabilites de survie a 5 ans dans chaque groupe (pour G*Power)
+t_ref    <- 5
+S_t      <- summary(fit_sexe, times = t_ref)$surv
+names(S_t) <- levels(baseline$sexe)
+
+round(c(HR = unname(HR), p_femmes = p_femmes, k = k, p_evt = p_evt, S_t), 3)
+
+
+# -----------------------------------------------------------------------------
+# 5.1 Avec G*Power (le logiciel n'a pas de module "log-rank" : on compare les
+#     probabilites de survie des 2 groupes a un temps fixe t = 5 ans)
+# -----------------------------------------------------------------------------
+# Menu G*Power :
+#   Test family           : z tests
+#   Statistical test      : Proportions: Difference between two independent
+#                           proportions
+#   Type of power analysis: A priori: Compute required sample size
+# Input parameters :
+#   Tail(s)               : Two
+#   Proportion p2         : survie a 5 ans des femmes  (S_t["femme"])
+#   Proportion p1         : survie a 5 ans des hommes  (S_t["homme"])
+#   alpha err prob        : 0.05
+#   Power (1-beta err prob): 0.80
+#   Allocation ratio N2/N1: k  (1 si groupes de meme taille)
+# -> Clic sur "Calculate" : G*Power donne Sample size group 1, group 2 et
+#    Total sample size.
+# (Variante plus conservatrice : Test family "Exact" -> "Proportions:
+#  Inequality, two independent groups (Fisher's exact test)")
+#
+# La fonction ci-dessous reproduit le calcul de G*Power (test z, variance
+# poolee sous H0) pour verifier le resultat (a 1 sujet pres selon l'arrondi).
+n_gpower_prop <- function(p1, p2, alpha = 0.05, puissance = 0.80, k = 1) {
+  p_bar <- (p1 + k * p2) / (1 + k)
+  n1 <- (qnorm(1 - alpha / 2) * sqrt(p_bar * (1 - p_bar) * (1 + 1 / k)) +
+         qnorm(puissance) * sqrt(p1 * (1 - p1) + p2 * (1 - p2) / k))^2 /
+        (p1 - p2)^2
+  n1 <- ceiling(n1)
+  n2 <- ceiling(k * n1)
+  c(N1 = n1, N2 = n2, Total = n1 + n2)
+}
+# Controle : p1 = 0.60, p2 = 0.70, k = 1 -> G*Power donne 356 + 356 = 712
+n_gpower_prop(0.60, 0.70)
+
+# Groupes de meme taille
+n_gpower_prop(S_t["homme"], S_t["femme"], alpha, puissance, k = 1)
+# Meme repartition hommes / femmes que dans baseline
+n_gpower_prop(S_t["homme"], S_t["femme"], alpha, puissance, k = k)
+
+
+# -----------------------------------------------------------------------------
+# 5.2 Pour le test du LOG-RANK (formules de Schoenfeld et de Freedman)
+# -----------------------------------------------------------------------------
+# Pour un log-rank, c'est le NOMBRE D'EVENEMENTS (D) qui conditionne la
+# puissance ; on en deduit le nombre de sujets N = D / P(evenement).
+
+# Schoenfeld : D = (z_alpha + z_beta)^2 / (p (1 - p) log(HR)^2)
+#   p = proportion de sujets dans le groupe 2
+D_schoenfeld <- ceiling((z_alpha + z_beta)^2 /
+                        (p_femmes * (1 - p_femmes) * log(HR)^2))
+
+# Freedman : D = (z_alpha + z_beta)^2 (1 + k HR)^2 / (k (1 - HR)^2)
+D_freedman <- ceiling((z_alpha + z_beta)^2 * (1 + k * HR)^2 /
+                      (k * (1 - HR)^2))
+
+data.frame(methode    = c("Schoenfeld", "Freedman"),
+           evenements = c(D_schoenfeld, D_freedman),
+           sujets     = ceiling(c(D_schoenfeld, D_freedman) / p_evt))
+# Remarque : ces formules sont celles de powerSurvEpi::ssizeCT.default() et
+# de la plupart des logiciels (nQuery, PASS, Stata "power logrank").
+
+
+# -----------------------------------------------------------------------------
+# 5.3 Puissance a posteriori de l'etude (equivalent G*Power "Post hoc")
+# -----------------------------------------------------------------------------
+# Avec les 282 deces observes, quelle etait la puissance pour detecter HR ?
+D_obs <- sum(baseline$statut)
+puissance_obs <- pnorm(sqrt(D_obs * p_femmes * (1 - p_femmes)) * abs(log(HR)) -
+                       z_alpha)
+round(puissance_obs, 3)
+# NB : la puissance "post hoc" calculee avec l'effet observe n'apporte pas
+# d'information au-dela de la p-value ; le calcul a priori (5.1 / 5.2) se fait
+# AVANT l'etude avec un HR cliniquement pertinent (ex. HR = 0.70).
