@@ -44,6 +44,13 @@ library(survival)
 library(survminer)
 library(biostat3)
 
+# /!\ CONFLIT DE NOMS : biostat3 charge aussi le package MASS, qui possede sa
+# propre fonction select() (a un seul argument). Comme il est charge APRES
+# dplyr, il "masque" dplyr::select() -> erreur "argument inutilise".
+# On force donc l'utilisation des versions de dplyr :
+select <- dplyr::select
+filter <- dplyr::filter
+
 # Pour l'aide sur dplyr :
 # ?dplyr
 # browseVignettes(package = "dplyr")
